@@ -2,7 +2,7 @@
 
 This repository contains many individual projects related to Data Science field.
 
-**Projects List -**
+**Projects List-**
 
 **1. US Retailer sales analysis**
 Tech stack -  SQL ,
