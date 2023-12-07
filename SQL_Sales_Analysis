@@ -1,0 +1,150 @@
+#Get the time range between which the orders were placed
+select min(DATE(order_purchase_timestamp)) as First_Order_Date,max(DATE(order_purchase_timestamp)) as Last_Order_Date from `Target.orders`;
+
+select count(distinct customer_city) as total_customer_cities from `Target.customers`;
+select count(distinct customer_unique_id) as primary_customers from `Target.customers`;
+select count( distinct order_id) as total_orders from `Target.orders`;
+select count(distinct customer_state) as total_customer_states from `Target.customers`;
+
+#Is there a growing trend in the no. of orders placed over the past years?
+select  Year, count(distinct order_id) as orders_placed from
+(select EXTRACT(YEAR from order_purchase_timestamp) as Year, *
+from `Target.orders`
+) t group by t.Year order by Year;
+
+#Can we see some kind of monthly seasonality in terms of the no. of orders being placed?
+select  Year,Month,Month_name, count(distinct order_id) as orders_placed from
+(select EXTRACT(YEAR from order_purchase_timestamp) as Year,EXTRACT(MONTH from order_purchase_timestamp) as Month,
+FORMAT_DATETIME("%B", DATETIME(order_purchase_timestamp)) as Month_name, *
+from Target.orders
+) t group by t.Year,t.Month,t.Month_name order by Year,Month;
+
+select  Month,Month_name, count(distinct order_id) as orders_placed from
+(select  EXTRACT(MONTH from order_purchase_timestamp) as Month,
+FORMAT_DATETIME("%B", DATETIME(order_purchase_timestamp)) as Month_name, *
+from `Target.orders`
+where EXTRACT(YEAR from order_purchase_timestamp) != 2016
+) t group by t.Month,t.Month_name order by Month;
+
+#During what time of the day, do the Brazilian customers mostly place their orders?
+select time_of_day, count(distinct order_id) as orders_placed from
+(select case when EXTRACT(HOUR from order_purchase_timestamp) between 0 and 6 then 'Dawn'
+             when EXTRACT(HOUR from order_purchase_timestamp) between 7 and 12 then 'Morning'
+             when EXTRACT(HOUR from order_purchase_timestamp) between 13 and 18 then 'Afternoon'
+             when EXTRACT(HOUR from order_purchase_timestamp) between 19 and 23 then 'Night'
+        end as time_of_day,*
+from Target.orders) t group by t.time_of_day;
+
+select * from `Target.orders` where order_id = 'c158e9806f85a33877bdfd4f607b72e7';
+
+#How are the customers distributed across all the states?
+select customer_state, count_customers, round(count_customers/(select count(distinct customer_id) from `Target.customers`)*100,2) as Perc_of_total_customers
+from 
+(select customer_state, count(*) as count_customers
+from `Target.customers` group by customer_state order by count_customers desc)t
+order by count_customers desc;
+
+#Get the month on month no. of orders placed in each state
+select customer_state, Month,Month_name, count(distinct order_id) as order_placed_this_month
+from
+(select EXTRACT(MONTH from o.order_purchase_timestamp) as Month,
+FORMAT_DATETIME("%B", DATETIME(o.order_purchase_timestamp)) as Month_name,
+c.*,o.*
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id) t
+group by customer_state, Month,Month_name
+order by 1,2,3;
+
+select * from `Target.order_items`;
+select * from `Target.orders`;
+
+#Get the % increase in the cost of orders from year 2017 to 2018 (include months between Jan to Aug only)
+with Order_value_cte as (
+select o.order_id, sum(p.payment_value) as cost_of_orders
+from `Target.orders` o join `Target.payments` p on o.order_id=p.order_id
+group by o.order_id )
+
+select Year,Cost_Of_Orders_by_Year,
+round(((Cost_Of_Orders_by_Year-lag(Cost_Of_Orders_by_Year,1) over(order by Year))/lag(Cost_Of_Orders_by_Year,1) over(order by Year))*100,2) as Perc_change
+from (
+select EXTRACT(YEAR from o1.order_purchase_timestamp) as Year, round(sum(cost_of_orders),2) as Cost_Of_Orders_by_Year
+from `Target.orders` o1 join Order_value_cte o2 on o1.order_id=o2.order_id
+where EXTRACT(MONTH from o1.order_purchase_timestamp) not in (9,10,11,12)
+group by EXTRACT(YEAR from o1.order_purchase_timestamp)
+) t
+order by Year;
+
+select t1.customer_state, total_cost,avg_cost,total_freight_cost,avg_freight_cost,round(avg_cost-avg_freight_cost,0) as avg_margin, round(total_freight_cost/total_cost*100,2) as Freight_perc,round((total_cost-total_freight_cost)/total_cost*100,2) as Margin_perc
+from (
+#Calculate the Total & Average value of order price for each state.
+select c.customer_state, round(sum(p.payment_value),2) as total_cost, round(avg(p.payment_value),2) as avg_cost
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id
+join (select order_id, sum(payment_value) as payment_value from `Target.payments` group by order_id) p on o.order_id = p.order_id
+group by c.customer_state
+order by avg_cost desc) t1 join
+(
+#Calculate the Total & Average value of order freight for each state
+select c.customer_state, round(sum(i.freight_value),2) as total_freight_cost, round(avg(i.freight_value),2) as avg_freight_cost
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id
+join (select order_id, sum(freight_value) as freight_value from`Target.order_items` group by order_id) i 
+on o.order_id = i.order_id
+group by c.customer_state
+order by avg_freight_cost desc) t2 on t1.customer_state=t2.customer_state
+order by Margin_perc desc;
+
+select round(sum(payment_value),2) , count(distinct o.order_id),round(sum(payment_value)/count(distinct o.order_id),2)
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id
+join `Target.payments` p on o.order_id = p.order_id
+where customer_state = 'RJ';
+
+#Find the no. of days taken to deliver each order from the order’s purchase date as delivery time.
+#Also, calculate the difference (in days) between the estimated & actual delivery date of an order.
+
+select order_id,time_to_deliver,round(AVG(time_to_deliver) over(),0) as avg_time_to_deliver,diff_estimated_delivery,
+round(AVG(diff_estimated_delivery) over(),0) as avg_diff_estimated_delivery
+from (
+select order_id, TIMESTAMP_DIFF(order_delivered_customer_date,order_purchase_timestamp,DAY) as time_to_deliver,
+TIMESTAMP_DIFF(order_estimated_delivery_date,order_delivered_customer_date,DAY) as diff_estimated_delivery
+from `Target.orders`) t;
+
+
+#Top 5 states  with the highest & lowest average freight value
+select customer_state as State, avg_freight_value from (
+select c.customer_state, round(AVG(freight_value),2) as avg_freight_value,
+dense_rank() over(order by AVG(freight_value) desc) as top_rank,
+dense_rank() over(order by AVG(freight_value) asc) as bottom_rank
+from
+(select order_id, sum(freight_value) as freight_value from`Target.order_items` group by order_id) oi 
+join `Target.orders` o on oi.order_id =o.order_id
+join `Target.customers` c on o.customer_id = c.customer_id
+group by c.customer_state) t
+where t.top_rank <=5 or t.bottom_rank <=5
+order by t.top_rank;
+
+#Find out the top 5 states with the highest & lowest average delivery time
+select customer_state as State, avg_delivery_time from (
+select c.customer_state, round(AVG(TIMESTAMP_DIFF(order_delivered_customer_date,order_purchase_timestamp,DAY)),2) as avg_delivery_time, rank() over(order by AVG(TIMESTAMP_DIFF(order_delivered_customer_date,order_purchase_timestamp,DAY)) desc) as high_rank, rank() over(order by AVG(TIMESTAMP_DIFF(order_delivered_customer_date,order_purchase_timestamp,DAY)) asc) as low_rank
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id
+group by c.customer_state ) t
+where t.high_rank<=5 or t.low_rank<=5
+order by t.low_rank;
+
+#Find out the top 5 states where the order delivery is really fast as compared to the estimated date of delivery.
+#You can use the difference between the averages of actual & estimated delivery date to figure out how fast the delivery was for #each state.
+select customer_state as State, avg_delivery_time
+from (
+select c.customer_state, round(AVG(TIMESTAMP_DIFF(order_delivered_customer_date,order_estimated_delivery_date,DAY)),2) as avg_delivery_time, rank() over(order by AVG(TIMESTAMP_DIFF(order_delivered_customer_date,order_estimated_delivery_date,DAY))) as rn
+from `Target.orders` o join `Target.customers` c on o.customer_id=c.customer_id
+group by c.customer_state) t
+where t.rn <=5
+order by t.rn;
+
+#Find the month on month no. of orders placed using different payment types
+select Month_Name,Month,payment_type,count(distinct order_id) as number_of_orders
+from (
+select EXTRACT(MONTH from o.order_purchase_timestamp) as Month,FORMAT_DATETIME("%B", DATETIME(o.order_purchase_timestamp)) as Month_name,payment_type,o.order_id
+from `Target.payments` p join `Target.orders` o on p.order_id=o.order_id) t
+group by Month_Name,Month,payment_type
+order by Month;
+
+#Find the no. of orders placed on the basis of the payment installments that have been paid.
+select count(distinct order_id) from `Target.payments` where payment_installments >= 1 and payment_value > 0;
